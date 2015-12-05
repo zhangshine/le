@@ -258,7 +258,7 @@ def append_lets_encrypt_intermediate_cert(cert):
     if r.status_code != 200:
         raise ValueError('Got Let\'s Encrypt intermediate cert failed.')
 
-    return "{0}\n{1}".format(r.content.decode(), cert)
+    return "{0}\n{1}".format(cert, r.content.decode())
 
 
 def main():
