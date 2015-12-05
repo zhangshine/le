@@ -66,6 +66,10 @@ def get_key_exponent_base64(exp=65537):
     return b64(binascii.unhexlify('0{0:x}'.format(exp)))
 
 
+class LetsEncryptRateLimitException(Exception):
+    pass
+
+
 class LetsEncrypt(object):
     def __init__(self, user_key_path, domain, domain_csr_path, acme_dir):
         self.user_key_path = user_key_path
@@ -162,8 +166,12 @@ class LetsEncrypt(object):
             'csr': b64(domain_csr_der)
         })
 
-        if r.status_code != 201:
-            raise ValueError('Error signing certificate: {code} {err}'.format(code=r.status_code, err=r.content))
+        if r.status_code == 429:
+            raise LetsEncryptRateLimitException()
+        elif r.status_code != 201:
+            raise ValueError('Error signing certificate: {code} {err}'.format(
+                code=r.status_code, err=r.content.decode()
+            ))
 
         return """-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n""".format(
             "\n".join(textwrap.wrap(base64.b64encode(r.content).decode(), 64))
