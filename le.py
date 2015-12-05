@@ -64,169 +64,158 @@ def get_key_exponent_base64(exp=65537):
     return b64(binascii.unhexlify('0{0:x}'.format(exp)))
 
 
-def get_header(user_key_path):
-    return {
-        'alg': 'RS256',
-        'jwk': {
-            'e': get_key_exponent_base64(),
-            'kty': 'RSA',
-            'n': get_key_modulus_base64(user_key_path)
+class LetsEncrypt(object):
+    def __init__(self, user_key_path, domain, domain_csr_path, acme_dir):
+        self.user_key_path = user_key_path
+        self.header = self.get_header()
+        self.domain = domain
+        self.domain_csr_path = domain_csr_path
+        self.acme_dir = acme_dir
+
+    def get_header(self):
+        return {
+            'alg': 'RS256',
+            'jwk': {
+                'e': get_key_exponent_base64(),
+                'kty': 'RSA',
+                'n': get_key_modulus_base64(self.user_key_path)
+            }
         }
-    }
 
+    def _send_signed_request(self, url, payload):
+        nonce = get_replay_nonce()
+        payload64 = b64(payload)
 
-def _send_signed_request(url, account_key_path, payload, header):
-    nonce = get_replay_nonce()
-    payload64 = b64(payload)
+        protected = copy.deepcopy(self.header)
+        protected.update({'nonce': nonce})
+        protected64 = b64(json.dumps(protected))
 
-    protected = copy.deepcopy(header)
-    protected.update({'nonce': nonce})
-    protected64 = b64(json.dumps(protected))
+        p = subprocess.Popen(['openssl', 'dgst', '-sha256', '-sign', self.user_key_path], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate('{0}.{1}'.format(protected64, payload64))
+        data = json.dumps({
+            'header': self.header,
+            'protected': protected64,
+            'payload': payload64,
+            'signature': b64(out)
+        })
 
-    p = subprocess.Popen(['openssl', 'dgst', '-sha256', '-sign', account_key_path], stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = p.communicate('{0}.{1}'.format(protected64, payload64))
-    data = json.dumps({
-        'header': header,
-        'protected': protected64,
-        'payload': payload64,
-        'signature': b64(out)
-    })
+        r = requests.post(url, data)
+        return r
 
-    r = requests.post(url, data)
-    return r
+    def user_register(self):
+        r = self._send_signed_request(CA + '/acme/new-reg', {
+            'resource': 'new-reg',
+            'agreement': 'https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf'
+        })
 
-
-def user_register(user_key_path, header):
-    r = _send_signed_request(CA + '/acme/new-reg', user_key_path, {
-        'resource': 'new-reg',
-        'agreement': 'https://letsencrypt.org/documents/LE-SA-v1.0.1-July-27-2015.pdf'
-    }, header)
-
-    if r.status_code in [201, 409]:
-        return True
-    else:
-        raise ValueError('Register user failed: {code} {err}'.format(r.status_code, r.content))
-
-
-def write_challenge_file(token, header, acme_dir):
-    user_key_json = json.dumps(header['jwk'], sort_keys=True, separators=(',', ':'))  # eliminate space
-    thumb_print = b64(hashlib.sha256(user_key_json).digest())
-
-    key_authorization = '{0}.{1}'.format(token, thumb_print)
-
-    # write challenge to file
-    key_authorization_path = os.path.join(acme_dir, token)
-    with open(key_authorization_path, 'w') as f:
-        f.write(key_authorization)
-
-    return key_authorization_path, key_authorization
-
-
-def notify_acme_we_are_ready(user_key_path, challenge_url, key_authorization, header):
-    r = _send_signed_request(challenge_url, user_key_path, {
-        'resource': 'challenge',
-        'keyAuthorization': key_authorization
-    }, header)
-
-    if r.status_code != 202:
-        raise ValueError('Notify Acme server failed: {code} {err}'.format(code=r.status_code, err=r.content))
-
-
-def waiting_domain_verification(challenge_url, key_authorization_path):
-    while True:
-        r = requests.get(challenge_url)
-        if r.status_code != 200:
-            raise ValueError('Fetch verification status failed: {code} {err}'.format(code=r.status_code, err=r.content))
-
-        status = r.json()['status']
-        if status == 'pending':
-            pass
-        elif status == 'valid':
-            os.remove(key_authorization_path)
-            break
+        if r.status_code in [201, 409]:
+            return True
         else:
-            raise ValueError('Bad status: {code} {err}'.format(code=r.status_code, err=r.content))
+            raise ValueError('Register user failed: {code} {err}'.format(r.status_code, r.content))
 
-        time.sleep(2)
+    def write_challenge_file(self, token):
+        user_key_json = json.dumps(self.header['jwk'], sort_keys=True, separators=(',', ':'))  # eliminate space
+        thumb_print = b64(hashlib.sha256(user_key_json).digest())
 
+        key_authorization = '{0}.{1}'.format(token, thumb_print)
 
-def get_signed_certificate(domain_csr_path, user_key_path, header):
-    p = subprocess.Popen(['openssl', 'req', '-in', domain_csr_path, '-outform', 'DER'],
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    domain_csr_der, err = p.communicate()
-    r = _send_signed_request(CA + '/acme/new-cert', user_key_path, {
-        'resource': 'new-cert',
-        'csr': b64(domain_csr_der)
-    }, header)
+        # write challenge to file
+        key_authorization_path = os.path.join(self.acme_dir, token)
+        with open(key_authorization_path, 'w') as f:
+            f.write(key_authorization)
 
-    if r.status_code != 201:
-        raise ValueError('Error signing certificate: {code} {err}'.format(code=r.status_code, err=r.content))
+        return key_authorization_path, key_authorization
 
-    return """-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n""".format(
-        "\n".join(textwrap.wrap(base64.b64encode(r.content), 64))
-    )
+    def notify_acme_we_are_ready(self, challenge_url, key_authorization):
+        r = self._send_signed_request(challenge_url, {
+            'resource': 'challenge',
+            'keyAuthorization': key_authorization
+        })
 
+        if r.status_code != 202:
+            raise ValueError('Notify Acme server failed: {code} {err}'.format(code=r.status_code, err=r.content))
 
-def get_challenge_info(user_key_path, domain, header):
-    r = _send_signed_request(CA + '/acme/new-authz', user_key_path, {
-        'resource': 'new-authz',
-        'identifier': {
-            'type': 'dns',
-            'value': domain
-        }
-    }, header)
+    def waiting_domain_verification(self, challenge_url, key_authorization_path):
+        while True:
+            r = requests.get(challenge_url)
+            if r.status_code != 200:
+                raise ValueError('Fetch verification status failed: {code} {err}'.format(
+                    code=r.status_code, err=r.content
+                ))
 
-    if r.status_code != 201:
-        raise ValueError('Start new authentication failed: {code} {err}'.format(code=r.status_code, err=r.content))
+            status = r.json()['status']
+            if status == 'pending':
+                pass
+            elif status == 'valid':
+                os.remove(key_authorization_path)
+                break
+            else:
+                raise ValueError('Bad status: {code} {err}'.format(code=r.status_code, err=r.content))
 
-    # challenge info
-    return [c for c in r.json()['challenges'] if c['type'] == 'http-01'][0]
+            time.sleep(2)
 
+    def get_signed_certificate(self):
+        p = subprocess.Popen(['openssl', 'req', '-in', self.domain_csr_path, '-outform', 'DER'],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        domain_csr_der, err = p.communicate()
+        r = self._send_signed_request(CA + '/acme/new-cert', {
+            'resource': 'new-cert',
+            'csr': b64(domain_csr_der)
+        })
 
-def check_if_challenge_available(domain, token):
-    url = 'http://{domain}/.well-known/acme-challenge/{token}'.format(domain=domain, token=token)
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise ValueError('Challenge file server configuration is wrong: {code} {err}'.format(
-            code=r.status_code, err=r.content
-        ))
+        if r.status_code != 201:
+            raise ValueError('Error signing certificate: {code} {err}'.format(code=r.status_code, err=r.content))
 
+        return """-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n""".format(
+            "\n".join(textwrap.wrap(base64.b64encode(r.content), 64))
+        )
 
-def sign_domain(acme_dir, user_key_path, header, domain, domain_csr_path):
-    challenge = get_challenge_info(user_key_path, domain, header)
+    def get_challenge_info(self):
+        r = self._send_signed_request(CA + '/acme/new-authz', {
+            'resource': 'new-authz',
+            'identifier': {
+                'type': 'dns',
+                'value': self.domain
+            }
+        })
 
-    token = challenge['token']
-    key_authorization_path, key_authorization = write_challenge_file(token, header, acme_dir)
+        if r.status_code != 201:
+            raise ValueError('Start new authentication failed: {code} {err}'.format(code=r.status_code, err=r.content))
 
-    # check that the file is in place
-    check_if_challenge_available(domain, token)
+        # challenge info
+        return [c for c in r.json()['challenges'] if c['type'] == 'http-01'][0]
 
-    # notify acme we are ready
-    challenge_url = challenge['uri']
-    notify_acme_we_are_ready(user_key_path, challenge_url, key_authorization, header)
+    def check_if_challenge_available(self, token):
+        url = 'http://{domain}/.well-known/acme-challenge/{token}'.format(domain=self.domain, token=token)
+        r = requests.get(url)
+        if r.status_code != 200:
+            raise ValueError('Challenge file server configuration is wrong: {code} {err}'.format(
+                code=r.status_code, err=r.content
+            ))
 
-    # waiting domain verified
-    waiting_domain_verification(challenge_url, key_authorization_path)
+    def sign_domain(self):
+        challenge = self.get_challenge_info()
 
-    # send domain cert
-    return get_signed_certificate(domain_csr_path, user_key_path, header)
+        token = challenge['token']
+        key_authorization_path, key_authorization = self.write_challenge_file(token)
 
+        # check that the file is in place
+        self.check_if_challenge_available(token)
 
-def sign_domain_cert(user_key_path, domain, domain_csr_path, acme_dir):
-    """
+        # notify acme we are ready
+        challenge_url = challenge['uri']
+        self.notify_acme_we_are_ready(challenge_url, key_authorization)
 
-    :param user_key_path:
-    :param domain:
-    :param domain_csr_path:
-    :param acme_dir: Wellknown challenge dir
-    :return:
-    """
-    header = get_header(user_key_path)
+        # waiting domain verified
+        self.waiting_domain_verification(challenge_url, key_authorization_path)
 
-    user_register(user_key_path, header)
+        # send domain cert
+        return self.get_signed_certificate()
 
-    return sign_domain(acme_dir, user_key_path, header, domain, domain_csr_path)
+    def __call__(self):
+        self.user_register()
+        return self.sign_domain()
 
 
 def generate_key(key_path):
@@ -292,7 +281,7 @@ def main():
             generate_key(domain_key_path)
             generate_domain_csr(domain, domain_key_path, domain_csr_path)
 
-    cert = sign_domain_cert(user_key_path, domain, domain_csr_path, acme_dir)
+    cert = LetsEncrypt(user_key_path, domain, domain_csr_path, acme_dir)()
     chained_cert = append_lets_encrypt_intermediate_cert(cert)
     sys.stdout.write(chained_cert)
 
