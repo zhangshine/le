@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import argparse
 import base64
 import copy
@@ -20,7 +21,9 @@ CA = 'https://acme-v01.api.letsencrypt.org'
 
 def b64(b):
     # https://github.com/letsencrypt/letsencrypt/blob/74b2e3bc515b5f7e805883a26f1b0e47ed686098/acme/acme/jose/b64.py#L21
-    return base64.urlsafe_b64encode(b).rstrip('=')  # replace '=' with space ?
+    if isinstance(b, str):
+        b = b.encode()
+    return base64.urlsafe_b64encode(b).decode().rstrip('=')  # replace '=' with space ?
 
 
 def get_replay_nonce():
@@ -45,7 +48,7 @@ def get_key_modulus(key_file_path):
     out, err = p.communicate()
 
     if p.returncode != 0:
-        raise ValueError('Get key modulus failed: {err}'.format(err=err))
+        raise ValueError('Get key modulus failed:\n{err}'.format(err=err.decode()))
 
     out = out.strip()
     prefix = b'Modulus='
@@ -84,7 +87,7 @@ class LetsEncrypt(object):
 
     def _send_signed_request(self, url, payload):
         nonce = get_replay_nonce()
-        payload64 = b64(payload)
+        payload64 = b64(json.dumps(payload, sort_keys=True, separators=(',', ':')))
 
         protected = copy.deepcopy(self.header)
         protected.update({'nonce': nonce})
@@ -92,7 +95,7 @@ class LetsEncrypt(object):
 
         p = subprocess.Popen(['openssl', 'dgst', '-sha256', '-sign', self.user_key_path], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = p.communicate('{0}.{1}'.format(protected64, payload64))
+        out, err = p.communicate(input='{0}.{1}'.format(protected64, payload64).encode())
         data = json.dumps({
             'header': self.header,
             'protected': protected64,
@@ -116,7 +119,7 @@ class LetsEncrypt(object):
 
     def write_challenge_file(self, token):
         user_key_json = json.dumps(self.header['jwk'], sort_keys=True, separators=(',', ':'))  # eliminate space
-        thumb_print = b64(hashlib.sha256(user_key_json).digest())
+        thumb_print = b64(hashlib.sha256(user_key_json.encode()).digest())
 
         key_authorization = '{0}.{1}'.format(token, thumb_print)
 
@@ -139,10 +142,6 @@ class LetsEncrypt(object):
     def waiting_domain_verification(self, challenge_url, key_authorization_path):
         while True:
             r = requests.get(challenge_url)
-            if r.status_code != 200:
-                raise ValueError('Fetch verification status failed: {code} {err}'.format(
-                    code=r.status_code, err=r.content
-                ))
 
             status = r.json()['status']
             if status == 'pending':
@@ -168,7 +167,7 @@ class LetsEncrypt(object):
             raise ValueError('Error signing certificate: {code} {err}'.format(code=r.status_code, err=r.content))
 
         return """-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n""".format(
-            "\n".join(textwrap.wrap(base64.b64encode(r.content), 64))
+            "\n".join(textwrap.wrap(base64.b64encode(r.content).decode(), 64))
         )
 
     def get_challenge_info(self):
@@ -224,23 +223,23 @@ def generate_key(key_path):
     if p.returncode != 0:
         raise ValueError('Generate key failed: {0} {1}'.format(key_path, err))
 
-    with open(key_path, 'w') as f:
+    with open(key_path, 'wb') as f:
         f.write(out)
 
 
 def generate_domain_csr(domain, domain_key_path, domain_csr_path):
     p = subprocess.Popen(
-        ['openssl', 'req', '-new', '-sha256', '-key', domain_key_path, '-subj', '"/CN={0}"'.format(domain)],
+        ['openssl', 'req', '-new', '-sha256', '-key', domain_key_path, '-subj', '/CN={0}'.format(domain)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     out, err = p.communicate()
     if p.returncode != 0:
-        raise ValueError('Generate domain csr file failed: {domain} {domain_key_path} {domain_csr_path} {err}'.format(
-            domain=domain, domain_key_path=domain_key_path, domain_csr_path=domain_csr_path, err=err
+        raise ValueError('Generate domain csr file failed: {domain} {domain_key_path} {domain_csr_path}\n{err}'.format(
+            domain=domain, domain_key_path=domain_key_path, domain_csr_path=domain_csr_path, err=err.decode()
         ))
 
     with open(domain_csr_path, 'w') as f:
-        f.write(out)
+        f.write(out.decode())
 
 
 def append_lets_encrypt_intermediate_cert(cert):
@@ -252,7 +251,7 @@ def append_lets_encrypt_intermediate_cert(cert):
     if r.status_code != 200:
         raise ValueError('Got Let\'s Encrypt intermediate cert failed.')
 
-    return "{0}\n{1}".format(r.content, cert)
+    return "{0}\n{1}".format(r.content.decode(), cert)
 
 
 def main():
