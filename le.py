@@ -282,9 +282,9 @@ def main():
 
     domain_csr_path = args.domain_csr_path
     if not domain_csr_path:
-        domain_csr_path = os.path.join(base_dir, 'certs', 'domain.csr')
+        domain_csr_path = os.path.join(base_dir, 'certs', '{0}.csr'.format(domain))
         if not os.path.exists(domain_csr_path):
-            domain_key_path = os.path.join(base_dir, 'certs', 'domain.key')
+            domain_key_path = os.path.join(base_dir, 'certs', '{0}.key'.format(domain))
             generate_key(domain_key_path)
             generate_domain_csr(domain, domain_key_path, domain_csr_path)
 
