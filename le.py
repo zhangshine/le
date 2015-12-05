@@ -30,7 +30,6 @@ def get_replay_nonce():
     # Get replay-nonce https://acme-v01.api.letsencrypt.org/directory
     r = requests.head('{0}/directory'.format(CA))
     reg_nonce = r.headers['Replay-Nonce']
-    print(reg_nonce)
     return reg_nonce
 
 
@@ -260,6 +259,7 @@ def main():
     parser.add_argument('acme_dir', metavar='DcmeDir', type=str, help='Wellknown change file destination')
     parser.add_argument('--user-key-path', dest='user_key_path', help='User key file path')
     parser.add_argument('--domain-csr-path', dest='domain_csr_path', help='Domain csr file path')
+    parser.add_argument('--output', dest='output', help='Write signed cert to an output file')
 
     args = parser.parse_args()
     domain = args.domain
@@ -282,7 +282,11 @@ def main():
 
     cert = LetsEncrypt(user_key_path, domain, domain_csr_path, acme_dir)()
     chained_cert = append_lets_encrypt_intermediate_cert(cert)
-    sys.stdout.write(chained_cert)
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(chained_cert)
+    else:
+        sys.stdout.write(chained_cert)
 
 if __name__ == '__main__':
     main()
