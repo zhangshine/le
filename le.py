@@ -167,7 +167,7 @@ class LetsEncrypt(object):
         })
 
         if r.status_code == 429:
-            raise LetsEncryptRateLimitException()
+            raise LetsEncryptRateLimitException(r.content.decode())
         elif r.status_code != 201:
             raise ValueError('Error signing certificate: {code} {err}'.format(
                 code=r.status_code, err=r.content.decode()
