@@ -289,12 +289,12 @@ def main():
             generate_domain_csr(domain, domain_key_path, domain_csr_path)
 
     cert = LetsEncrypt(user_key_path, domain, domain_csr_path, acme_dir)()
-    chained_cert = append_lets_encrypt_intermediate_cert(cert)
+    # cert = append_lets_encrypt_intermediate_cert(cert)
     if args.output:
         with open(args.output, 'w') as f:
-            f.write(chained_cert)
+            f.write(cert)
     else:
-        sys.stdout.write(chained_cert)
+        sys.stdout.write(cert)
 
 if __name__ == '__main__':
     main()
